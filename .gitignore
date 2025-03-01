@@ -9,4 +9,4 @@ env/
 ngrok-stable-linux-amd64.zip
 
 !/hf-dfot/lib/python3.11/site-packages/algorithms
-/hf-dfot/*
+/hf-dfot/lib/python3.11/site-packages/*
