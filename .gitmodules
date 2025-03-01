@@ -1,0 +1,3 @@
+[submodule "FastVideo"]
+	path = FastVideo
+	url = https://github.com/hao-ai-lab/FastVideo.git

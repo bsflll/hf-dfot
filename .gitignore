@@ -1,0 +1,9 @@
+huggingface
+.DS_Store
+data/
+__pycache__/
+env/
+data/
+/FastVideo
+/myenv
+/hf-dfot
