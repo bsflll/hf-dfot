@@ -23,7 +23,8 @@ app.post("/upload", (req, res) => {
 
   // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
   const base64Data = image.replace(/^data:image\/jpeg;base64,/, "");
-  const saveDirectory = "/nas-dev/home/christina/hf-dfot/hf-dfot/mecor_hq/saved-images";
+  const saveDirectory = "/nas-dev/home/christina/hf-dfot/mecor_hq/saved-images";
+  
 
   // Ensure the directory exists
   if (!fs.existsSync(saveDirectory)) {

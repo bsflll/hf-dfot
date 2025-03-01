@@ -15,7 +15,6 @@ from datasets.video.utils.io import read_video
 from export import export_to_video, export_to_gif, export_images_to_gif
 from camera_pose import extend_poses, CameraPose
 from scipy.spatial.transform import Rotation, Slerp
-from torchvision.io import write_video
 
 DATASET_URL = "https://huggingface.co/kiwhansong/DFoT/resolve/main/datasets/RealEstate10K_Tiny.tar.gz"
 DATASET_DIR = Path("data/real-estate-10k-tiny")
@@ -295,7 +294,6 @@ def undo_navigation(
 def _interpolate_conditions(conditions, indices):
     """
     Interpolate conditions to fill out missing frames
-
     Aegs:
         conditions (Tensor): conditions (B, T, C)
         indices (Tensor): indices of keyframes (T')
@@ -408,131 +406,6 @@ def smooth_navigation(
         export_to_video(video, fps=NAVIGATION_FPS * interpolation_factor),
         [(image, f"t={i}") for i, image in enumerate(images)],
     )
-
-@spaces.GPU(duration=45)
-@torch.autocast("cuda")
-@torch.no_grad()
-def generate_continuous_video(
-    initial_video: torch.Tensor,
-    initial_poses: torch.Tensor,
-    guidance_scale: float = 4.0,
-    frames_per_generation: int = 8,
-    overlap_frames: int = 1,
-    x_angle: float = 0.0,
-    y_angle: float = 0.0,
-    distance: float = 100.0,
-    max_generations: int = None,
-    callback=None,
-    random_angles: bool = True
-):
-    # Move initial tensors to CUDA and ensure proper dimensions
-    current_video = initial_video.to("cuda")
-    current_poses = initial_poses.to("cuda")
-    generation_count = 0
-    halfway = max_generations // 2 if max_generations is not None else 5
-    
-    while max_generations is None or generation_count < max_generations:
-            # Generate random angles if enabled
-        if generation_count < halfway:
-            # First half: go straight
-            current_x_angle = 0.0
-            current_y_angle = 0.0
-            current_distance = 100.0
-        else:
-            current_x_angle = 0.0
-            current_y_angle = 30.0  # Positive angle for right turn
-            current_distance = 50.0
-        
-        # Use only the last 8 frames for context
-        context_frames = min(len(current_video), 4)
-        
-        n_prediction_frames =  8 - context_frames
-        
-        print(f"Number of prediction frames: {n_prediction_frames}\n")
-        print(f"Number of context frames: {context_frames}\n")  
-
-        # Take only the last context_frames for processing
-        xs = dfot._normalize_x(current_video[-context_frames:].clone().unsqueeze(0))
-        conditions = current_poses[-context_frames:].clone().unsqueeze(0)
-        
-        # Extend poses for the new frames
-        conditions = extend_poses(
-            conditions,
-            n=n_prediction_frames,
-            x_angle=current_x_angle,
-            y_angle=current_y_angle,
-            distance=current_distance,
-        )
-        
-        # Create context weights for available frames
-        context_weights = torch.linspace(1.0, 2.0, context_frames, device="cuda")
-        context_mask = torch.cat([
-            context_weights.unsqueeze(0),
-            torch.zeros(1, n_prediction_frames, device="cuda"),
-        ], dim=-1)
-        
-        # Generate new frames
-        print(f"Number of prediction frames: {n_prediction_frames}\n")
-        print(f"Number of context frames: {context_frames}\n")  
-        print(f"Conditions shape: {conditions.shape}\n")
-        
-        next_video = dfot._unnormalize_x(
-            dfot._sample_sequence(
-            batch_size=1,
-            context=torch.cat([
-                xs,
-                torch.zeros(
-                1,
-                n_prediction_frames,
-                *xs.shape[2:],
-                device=xs.device,
-                dtype=xs.dtype,
-                ),
-            ], dim=1),
-            context_mask=context_mask,
-            conditions=conditions[:, -(context_frames + n_prediction_frames):],
-            history_guidance=HistoryGuidance.smart(
-                x_angle=current_x_angle,
-                y_angle=current_y_angle,
-                distance=current_distance,
-                visualize=False,
-            ),
-            )[0]
-        )[0][context_frames:].detach()
-        
-        # Handle overlap between generations
-        if overlap_frames > 0:
-            overlap_video, _ = _interpolate_between(
-                dfot._normalize_x(torch.cat([
-                    current_video[-1:],
-                    next_video[:1]
-                ]).unsqueeze(0)),
-                torch.cat([
-                    current_poses[-1:],
-                    conditions[0, -n_prediction_frames:1]
-                ]).unsqueeze(0),
-                interpolation_factor=2
-            )
-            overlap_video = dfot._unnormalize_x(overlap_video)[0].detach()
-            
-            current_video = torch.cat([
-                current_video[:-1],
-                overlap_video[0].unsqueeze(0) if overlap_video[0].dim() == 3 else overlap_video[0],
-                next_video
-            ], dim=0)
-        else:
-            current_video = torch.cat([current_video, next_video], dim=0)
-            
-        current_poses = conditions[0, -n_prediction_frames:]
-        
-        if callback:
-            should_continue = callback(current_video, current_poses)
-            if not should_continue:
-                break
-        
-        generation_count += 1
-    
-    return current_video, current_poses
 
 def render_demo1(s: Literal["Selection", "Generation"], idx: int, demo1_stage: gr.State, demo1_selected_index: gr.State):
     gr.Markdown(
@@ -970,96 +843,6 @@ def render_demo3(
                                     demo3_generated_gallery,
                                 ],
                             )
-                    with gr.Tab("Continuous", elem_id="continuous-controls-tab"):
-                        with gr.Group():
-                            gr.Markdown("_**Configure Continuous Generation:**_")
-                            
-                            continuous_guidance_scale = gr.Slider(
-                                minimum=1,
-                                maximum=6,
-                                value=4,
-                                step=0.5,
-                                label="History Guidance Scale",
-                                info="Without history guidance: 1.0; Recommended: 4.0",
-                                interactive=True,
-                            )
-                            
-                            continuous_frames = gr.Slider(
-                                minimum=2,
-                                maximum=8,
-                                value=4,
-                                step=1,
-                                label="Frames per Generation",
-                                info="Number of new frames to generate in each step",
-                                interactive=True,
-                            )
-                            
-                            continuous_overlap = gr.Slider(
-                                minimum=1,
-                                maximum=2,
-                                value=1,
-                                step=1,
-                                label="Overlap Frames",
-                                info="Number of frames to overlap between generations",
-                                interactive=True,
-                            )
-                            
-                            continuous_generations = gr.Slider(
-                                minimum=5,
-                                maximum=50,
-                                value=10,
-                                step=5,
-                                label="Number of Generations",
-                                info="Total number of generation steps",
-                                interactive=True,
-                            )
-                            
-                            with gr.Row():
-                                continuous_x_angle = gr.Slider(
-                                    minimum=-40,
-                                    maximum=40,
-                                    value=0,
-                                    step=10,
-                                    label="Vertical Angle",
-                                    interactive=True,
-                                )
-                                continuous_y_angle = gr.Slider(
-                                    minimum=-90,
-                                    maximum=90,
-                                    value=0,
-                                    step=10,
-                                    label="Horizontal Angle",
-                                    interactive=True,
-                                )
-                                continuous_distance = gr.Slider(
-                                    minimum=0,
-                                    maximum=200,
-                                    value=100,
-                                    step=10,
-                                    label="Distance per Step",
-                                    interactive=True,
-                                )
-                            
-                            gr.Button("Start Continuous Generation", variant="primary").click(
-                                fn = demo_continuous_generation,
-                                inputs=[
-                                    demo3_selected_index,
-                                    demo3_current_video,
-                                    demo3_current_poses,
-                                    demo3_current_view,
-                                    demo3_video,
-                                    demo3_generated_gallery,
-                                    continuous_generations,
-                                ],
-                                outputs=[
-                                    demo3_current_video,
-                                    demo3_current_poses,
-                                    demo3_current_view,
-                                    demo3_video,
-                                    demo3_generated_gallery,
-                                ],
-                                every=1
-                            )
                     gr.Markdown("---")
                     with gr.Group():
                         gr.Markdown("_You can always undo your last move:_")
@@ -1125,7 +908,6 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="teal")) as demo:
     .header-button-row div {
         width: 131.0px !important;
     }
-
     .header-button-column {
         width: 131.0px !important;
         gap: 5px !important;
@@ -1263,66 +1045,6 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="teal")) as demo:
             case 3:
                 render_demo3(_demo3_stage, _demo3_selected_index, demo3_stage, demo3_selected_index, demo3_current_video, demo3_current_poses)
                 
-
-def demo_continuous_generation(idx: int, current_video_state: gr.State, current_poses_state: gr.State, current_view: gr.Image, video_output: gr.Video, gallery_output: gr.Gallery, max_generations: int = 10):
-    initial_video = video_list[idx][:1]  # Start with first frame
-    initial_poses = poses_list[idx][:1]  # Start with first pose
-    
-    output_path = "continuous_generation.mp4"
-    frames_buffer = []
-    
-    def process_frames(video, poses):
-        video_cpu=video.cpu()
-        poses_cpu=poses.cpu()
-        current_frame=(video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy()
-        #current_poses_state.update(poses.cpu())
-        #current_view.update((video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy())
-        #video_output.update(export_to_video(video_cpu, fps=NAVIGATION_FPS))
-        gallery_images = [
-            (image, f"t={i}") for i, image in enumerate(
-                (video_cpu.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
-            )
-        ]
-        current_video = export_to_video(video_cpu, fps=NAVIGATION_FPS)
-        
-        # Return all updated components
-        return gr.update(value=video_cpu), \
-               gr.update(value=poses_cpu), \
-               gr.update(value=current_frame), \
-               gr.update(value=current_video), \
-               gr.update(value=gallery_images), \
-               True 
-        #frames = (video.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
-        #frames_buffer.extend([frame for frame in frames])
-        
-        #if len(frames_buffer) >= 30:  
-        #    write_video(output_path, np.stack(frames_buffer), fps=NAVIGATION_FPS)
-        
-        #return True 
-    
-    final_video, final_poses = generate_continuous_video(
-        initial_video=initial_video,
-        initial_poses=initial_poses,
-        frames_per_generation=8,
-        overlap_frames=1,
-        max_generations=max_generations,
-        callback=process_frames,
-    )
-    
-    final_video_cpu=final_video.cpu()
-    final_poses_cpu=final_poses.cpu()
-    #if frames_buffer:
-    #    write_video(output_path, np.stack(frames_buffer), fps=NAVIGATION_FPS)
-    
-    return (
-        final_video_cpu,
-        final_poses_cpu,
-        (final_video_cpu[-1].permute(1, 2, 0) * 255).clamp(0, 255).to(torch.uint8).numpy(),
-        export_to_video(final_video_cpu, fps=NAVIGATION_FPS),
-        [(image, f"t={i}") for i, image in enumerate(
-            (final_video_cpu.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
-        )]
-    )
 
 if __name__ == "__main__":
     demo.launch()
