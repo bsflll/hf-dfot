@@ -15,47 +15,12 @@ from datasets.video.utils.io import read_video
 from export import export_to_video, export_to_gif, export_images_to_gif
 from camera_pose import extend_poses, CameraPose
 from scipy.spatial.transform import Rotation, Slerp
-from torchvision.io import write_video
-from PIL import Image
-import os
 
 DATASET_URL = "https://huggingface.co/kiwhansong/DFoT/resolve/main/datasets/RealEstate10K_Tiny.tar.gz"
 DATASET_DIR = Path("data/real-estate-10k-tiny")
 LONG_LENGTH = 10  # seconds
 NAVIGATION_FPS = 3
 
-def load_local_images(image_dir: str):
-    """Load images from a local directory and convert them to the required format"""
-    # Get all image files from directory
-    image_files = sorted([f for f in os.listdir(image_dir) 
-                         if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
-    
-    video_list = []
-    first_frame_list = []
-    poses_list = []
-    
-    for image_file in image_files:
-        # Load image using PIL
-        img_path = os.path.join(image_dir, image_file)
-        pil_image = Image.open(img_path).convert('RGB')
-        
-        # Convert to tensor and normalize to [0, 1]
-        img_tensor = torch.from_numpy(np.array(pil_image)).float() / 255.0
-        img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)  # Add batch dimension
-        
-        # Create default camera pose (identity matrix)
-        default_pose = torch.eye(4)[:3].flatten().unsqueeze(0)  # 1x12 tensor
-        
-        # Store in lists
-        video_list.append(img_tensor)
-        first_frame_list.append(pil_image)
-        poses_list.append(default_pose)
-    
-    return video_list, first_frame_list, poses_list
-
-# Replace the default dataset loading with your local images
-# Comment out or remove the original dataset download and loading code
-"""
 if not DATASET_DIR.exists():
     DATASET_DIR.mkdir(parents=True)
     download_and_extract_archive(
@@ -63,13 +28,9 @@ if not DATASET_DIR.exists():
         DATASET_DIR.parent,
         remove_finished=True,
     )
-"""
-LOCAL_IMAGE_DIR = "/nas-dev/home/christina/hf-dfot/mecor_hq/saved-images"  # Replace with your image folder path
 
-# Load local images instead of the default dataset
-video_list, first_frame_list, poses_list = load_local_images(LOCAL_IMAGE_DIR)
 
-"""metadata = torch.load(DATASET_DIR / "metadata" / "test.pt", weights_only=False)
+metadata = torch.load(DATASET_DIR / "metadata" / "test.pt", weights_only=False)
 video_list = [
     read_video(path).permute(0, 3, 1, 2) / 255.0 for path in metadata["video_paths"]
 ]
@@ -96,8 +57,8 @@ for idx, video, path in zip(
     range(len(video_list)), video_list, metadata["video_paths"]
 ):
     indices = torch.linspace(0, video.size(0) - 1, 16, dtype=torch.long)
-    gif_paths.append(export_to_gif(video[indices], fps=8)) """
-gif_paths = [None] * len(video_list)
+    gif_paths.append(export_to_gif(video[indices], fps=8))
+
 
 # pylint: disable-next=no-value-for-parameter
 dfot = DFoTVideoPose.load_from_checkpoint(
@@ -333,7 +294,6 @@ def undo_navigation(
 def _interpolate_conditions(conditions, indices):
     """
     Interpolate conditions to fill out missing frames
-
     Aegs:
         conditions (Tensor): conditions (B, T, C)
         indices (Tensor): indices of keyframes (T')
@@ -446,131 +406,6 @@ def smooth_navigation(
         export_to_video(video, fps=NAVIGATION_FPS * interpolation_factor),
         [(image, f"t={i}") for i, image in enumerate(images)],
     )
-
-@spaces.GPU(duration=45)
-@torch.autocast("cuda")
-@torch.no_grad()
-def generate_continuous_video(
-    initial_video: torch.Tensor,
-    initial_poses: torch.Tensor,
-    guidance_scale: float = 4.0,
-    frames_per_generation: int = 8,
-    overlap_frames: int = 1,
-    x_angle: float = 0.0,
-    y_angle: float = 0.0,
-    distance: float = 100.0,
-    max_generations: int = None,
-    callback=None,
-    random_angles: bool = True
-):
-    # Move initial tensors to CUDA and ensure proper dimensions
-    current_video = initial_video.to("cuda")
-    current_poses = initial_poses.to("cuda")
-    
-    # Ensure poses have correct dimensions (B, T, 16)
-    if current_poses.size(-1) == 12:
-        # Add intrinsic parameters if missing
-        K = torch.tensor([1000.0, 0.0, 500.0, 500.0], device=current_poses.device)
-        K = K.expand(current_poses.size(0), current_poses.size(1), -1)
-        current_poses = torch.cat([K, current_poses], dim=-1)
-    
-    generation_count = 0
-    halfway = max_generations // 2 if max_generations is not None else 5
-    
-    while max_generations is None or generation_count < max_generations:
-        # Generate random angles if enabled
-        if generation_count < halfway:
-            # First half: go straight
-            current_x_angle = 0.0
-            current_y_angle = 0.0
-            current_distance = 100.0
-        else:
-            current_x_angle = 0.0
-            current_y_angle = 30.0  # Positive angle for right turn
-            current_distance = 50.0
-        
-        # Use only the last 8 frames for context
-        context_frames = min(len(current_video), 4)
-        n_prediction_frames = 8 - context_frames
-        
-        # Take only the last context_frames for processing
-        xs = dfot._normalize_x(current_video[-context_frames:].clone().unsqueeze(0))
-        conditions = current_poses[-context_frames:].clone().unsqueeze(0)
-        
-        # Extend poses for the new frames
-        extended_conditions = extend_poses(
-            conditions,
-            n=n_prediction_frames,
-            x_angle=current_x_angle,
-            y_angle=current_y_angle,
-            distance=current_distance,
-        )
-        
-        # Create context weights for available frames
-        context_weights = torch.linspace(1.0, 2.0, context_frames, device="cuda")
-        context_mask = torch.cat([
-            context_weights.unsqueeze(0),
-            torch.zeros(1, n_prediction_frames, device="cuda"),
-        ], dim=-1)
-        
-        # Generate new frames
-        next_video = dfot._unnormalize_x(
-            dfot._sample_sequence(
-                batch_size=1,
-                context=torch.cat([
-                    xs,
-                    torch.zeros(
-                        1,
-                        n_prediction_frames,
-                        *xs.shape[2:],
-                        device=xs.device,
-                        dtype=xs.dtype,
-                    ),
-                ], dim=1),
-                context_mask=context_mask,
-                conditions=extended_conditions[:, -(context_frames + n_prediction_frames):],
-                history_guidance=HistoryGuidance.smart(
-                    x_angle=current_x_angle,
-                    y_angle=current_y_angle,
-                    distance=current_distance,
-                    visualize=False,
-                ),
-            )[0]
-        )[0][context_frames:].detach()
-        
-        # Handle overlap between generations
-        if overlap_frames > 0:
-            overlap_video, _ = _interpolate_between(
-                dfot._normalize_x(torch.cat([
-                    current_video[-1:],
-                    next_video[:1]
-                ]).unsqueeze(0)),
-                torch.cat([
-                    current_poses[-1:],
-                    extended_conditions[0, -n_prediction_frames:1]
-                ]).unsqueeze(0),
-                interpolation_factor=2
-            )
-            overlap_video = dfot._unnormalize_x(overlap_video)[0].detach()
-            
-            current_video = torch.cat([
-                current_video[:-1],
-                overlap_video[0].unsqueeze(0) if overlap_video[0].dim() == 3 else overlap_video[0],
-                next_video
-            ], dim=0)
-        else:
-            current_video = torch.cat([current_video, next_video], dim=0)
-            
-        current_poses = extended_conditions[0, -n_prediction_frames:]
-        
-        if callback:
-            should_continue = callback(current_video, current_poses)
-            if not should_continue:
-                break
-        
-        generation_count += 1
-    
-    return current_video, current_poses
 
 def render_demo1(s: Literal["Selection", "Generation"], idx: int, demo1_stage: gr.State, demo1_selected_index: gr.State):
     gr.Markdown(
@@ -1008,95 +843,6 @@ def render_demo3(
                                     demo3_generated_gallery,
                                 ],
                             )
-                    with gr.Tab("Continuous", elem_id="continuous-controls-tab"):
-                        with gr.Group():
-                            gr.Markdown("_**Configure Continuous Generation:**_")
-                            
-                            continuous_guidance_scale = gr.Slider(
-                                minimum=1,
-                                maximum=6,
-                                value=4,
-                                step=0.5,
-                                label="History Guidance Scale",
-                                info="Without history guidance: 1.0; Recommended: 4.0",
-                                interactive=True,
-                            )
-                            
-                            continuous_frames = gr.Slider(
-                                minimum=2,
-                                maximum=8,
-                                value=4,
-                                step=1,
-                                label="Frames per Generation",
-                                info="Number of new frames to generate in each step",
-                                interactive=True,
-                            )
-                            
-                            continuous_overlap = gr.Slider(
-                                minimum=1,
-                                maximum=2,
-                                value=1,
-                                step=1,
-                                label="Overlap Frames",
-                                info="Number of frames to overlap between generations",
-                                interactive=True,
-                            )
-                            
-                            continuous_generations = gr.Slider(
-                                minimum=5,
-                                maximum=50,
-                                value=10,
-                                step=5,
-                                label="Number of Generations",
-                                info="Total number of generation steps",
-                                interactive=True,
-                            )
-                            
-                            with gr.Row():
-                                continuous_x_angle = gr.Slider(
-                                    minimum=-40,
-                                    maximum=40,
-                                    value=0,
-                                    step=10,
-                                    label="Vertical Angle",
-                                    interactive=True,
-                                )
-                                continuous_y_angle = gr.Slider(
-                                    minimum=-90,
-                                    maximum=90,
-                                    value=0,
-                                    step=10,
-                                    label="Horizontal Angle",
-                                    interactive=True,
-                                )
-                                continuous_distance = gr.Slider(
-                                    minimum=0,
-                                    maximum=200,
-                                    value=100,
-                                    step=10,
-                                    label="Distance per Step",
-                                    interactive=True,
-                                )
-                            
-                            gr.Button("Start Continuous Generation", variant="primary").click(
-                                fn = demo_continuous_generation,
-                                inputs=[
-                                    demo3_selected_index,
-                                    demo3_current_video,
-                                    demo3_current_poses,
-                                    demo3_current_view,
-                                    demo3_video,
-                                    demo3_generated_gallery,
-                                    continuous_generations,
-                                ],
-                                outputs=[
-                                    demo3_current_video,
-                                    demo3_current_poses,
-                                    demo3_current_view,
-                                    demo3_video,
-                                    demo3_generated_gallery,
-                                ],
-                            )
                     gr.Markdown("---")
                     with gr.Group():
                         gr.Markdown("_You can always undo your last move:_")
@@ -1162,7 +908,6 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="teal")) as demo:
     .header-button-row div {
         width: 131.0px !important;
     }
-
     .header-button-column {
         width: 131.0px !important;
         gap: 5px !important;
@@ -1301,65 +1046,5 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="teal")) as demo:
                 render_demo3(_demo3_stage, _demo3_selected_index, demo3_stage, demo3_selected_index, demo3_current_video, demo3_current_poses)
                 
 
-def demo_continuous_generation(idx: int, current_video_state: gr.State, current_poses_state: gr.State, current_view: gr.Image, video_output: gr.Video, gallery_output: gr.Gallery, max_generations: int = 10):
-    initial_video = video_list[idx][:1]  # Start with first frame
-    initial_poses = poses_list[idx][:1]  # Start with first pose
-    
-    output_path = "continuous_generation.mp4"
-    frames_buffer = []
-    
-    def process_frames(video, poses):
-        video_cpu=video.cpu()
-        poses_cpu=poses.cpu()
-        current_frame=(video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy()
-        #current_poses_state.update(poses.cpu())
-        #current_view.update((video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy())
-        #video_output.update(export_to_video(video_cpu, fps=NAVIGATION_FPS))
-        gallery_images = [
-            (image, f"t={i}") for i, image in enumerate(
-                (video_cpu.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
-            )
-        ]
-        current_video = export_to_video(video_cpu, fps=NAVIGATION_FPS)
-        
-        # Return all updated components
-        return gr.update(value=video_cpu), \
-               gr.update(value=poses_cpu), \
-               gr.update(value=current_frame), \
-               gr.update(value=current_video), \
-               gr.update(value=gallery_images), \
-               True 
-        #frames = (video.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
-        #frames_buffer.extend([frame for frame in frames])
-        
-        #if len(frames_buffer) >= 30:  
-        #    write_video(output_path, np.stack(frames_buffer), fps=NAVIGATION_FPS)
-        
-        #return True 
-    
-    final_video, final_poses = generate_continuous_video(
-        initial_video=initial_video,
-        initial_poses=initial_poses,
-        frames_per_generation=8,
-        overlap_frames=1,
-        max_generations=max_generations,
-        callback=process_frames,
-    )
-    
-    final_video_cpu=final_video.cpu()
-    final_poses_cpu=final_poses.cpu()
-    #if frames_buffer:
-    #    write_video(output_path, np.stack(frames_buffer), fps=NAVIGATION_FPS)
-    
-    return (
-        final_video_cpu,
-        final_poses_cpu,
-        (final_video_cpu[-1].permute(1, 2, 0) * 255).clamp(0, 255).to(torch.uint8).numpy(),
-        export_to_video(final_video_cpu, fps=NAVIGATION_FPS),
-        [(image, f"t={i}") for i, image in enumerate(
-            (final_video_cpu.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
-        )]
-    )
-
 if __name__ == "__main__":
-    demo.launch(share=True)
+    demo.launch()
