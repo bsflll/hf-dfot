@@ -6,4 +6,11 @@ env/
 data/
 /FastVideo
 /myenv
-/hf-dfot
+/hf-dfot/bin
+/hf-dfot/include
+/hf-dfot/lib64
+/hf-dfot/share
+ngrok-stable-linux-amd64.zip
+
+/hf-dfot/*
+!/hf-dfot/lib/python3.11/site-packages/algorithms
