@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Local Test</title>
+</head>
+<body>
+    <h1>WebRTC Video Streaming</h1>
+    <video id="video" autoplay playsinline></video>
+    <script>
+        const pc = new RTCPeerConnection();
+        const video = document.getElementById("video");
+
+        pc.ontrack = (event) => {
+            video.srcObject = event.streams[0];
+        };
+
+        async function startWebRTC() {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            const response = await fetch("/offer", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+            });
+
+            const answer = await response.json();
+            await pc.setRemoteDescription(answer);
+        }
+
+        startWebRTC();
+    </script>
+</body>
+</html>
