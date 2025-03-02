@@ -30,7 +30,6 @@ if not DATASET_DIR.exists():
         remove_finished=True,
     )
 
-
 metadata = torch.load(DATASET_DIR / "metadata" / "test.pt", weights_only=False)
 video_list = [
     read_video(path).permute(0, 3, 1, 2) / 255.0 for path in metadata["video_paths"]
@@ -95,7 +94,7 @@ def video_to_gif_and_images(video, indices):
     ]
 
 
-def get_duration_single_image_to_long_video(idx: int, guidance_scale: float, fps: int, progress:gr.Progress):
+def get_duration_single_image_to_long_video(idx: int, guidance_scale: float, fps: int, progress: gr.Progress):
     return 30 * fps
 
 
@@ -112,7 +111,6 @@ def single_image_to_long_video(
     conditions = poses[indices].unsqueeze(0).to("cuda")
     dfot.cfg.tasks.prediction.history_guidance.guidance_scale = guidance_scale
     dfot.cfg.tasks.prediction.keyframe_density = 12 / (fps * LONG_LENGTH)
-    # dfot.cfg.tasks.interpolation.history_guidance.guidance_scale = guidance_scale
     gen_video = dfot._unnormalize_x(
         dfot._predict_videos(
             dfot._normalize_x(xs),
@@ -176,6 +174,7 @@ class CustomProgressBar:
     def __getattr__(self, attr):
         return getattr(self.pbar, attr)
 
+
 def get_duration_navigate_video(video: torch.Tensor,
     poses: torch.Tensor,
     x_angle: float,
@@ -185,6 +184,7 @@ def get_duration_navigate_video(video: torch.Tensor,
     if abs(x_angle) < 30 and abs(y_angle) < 30 and distance < 150:
         return 45
     return 30
+
 
 @spaces.GPU(duration=45)
 @torch.autocast("cuda")
@@ -296,7 +296,7 @@ def _interpolate_conditions(conditions, indices):
     """
     Interpolate conditions to fill out missing frames
 
-    Aegs:
+    Args:
         conditions (Tensor): conditions (B, T, C)
         indices (Tensor): indices of keyframes (T')
     """
@@ -1082,7 +1082,7 @@ def render_demo3(
         
     
 
-# Create the Gradio Blocks
+# Create the Gradio Blocks without a sidebar
 with gr.Blocks(theme=gr.themes.Base(primary_hue="teal")) as demo:
     gr.HTML(
         """
@@ -1138,86 +1138,10 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="teal")) as demo:
     """
     )
 
-    demo_idx = gr.State(value=1)
+    # Set the default demo to demo 3.
+    demo_idx = gr.State(value=3)
 
-    with gr.Sidebar():
-        gr.Markdown("# Diffusion Forcing Transformer with History Guidance", elem_id="page-title")
-        gr.Markdown(
-            "### Official Interactive Demo for [_History-Guided Video Diffusion_](https://arxiv.org/abs/2502.06764)"
-        )
-        gr.Markdown("---")
-        gr.Markdown("#### Links ↓")
-        with gr.Row(elem_classes=["header-button-row"]):
-            with gr.Column(elem_classes=["header-button-column"], min_width=0):
-                gr.Button(
-                    value="Website",
-                    link="https://boyuan.space/history-guidance",
-                    icon="https://simpleicons.org/icons/googlechrome.svg",
-                    elem_classes=["header-button"],
-                    size="md",
-                    min_width=0,
-                )
-                gr.Button(
-                    value="Paper",
-                    link="https://arxiv.org/abs/2502.06764",
-                    icon="https://simpleicons.org/icons/arxiv.svg",
-                    elem_classes=["header-button"],
-                    size="md",
-                    min_width=0,
-                )
-            with gr.Column(elem_classes=["header-button-column"], min_width=0):
-                gr.Button(
-                    value="Code",
-                    link="https://github.com/kwsong0113/diffusion-forcing-transformer",
-                    icon="https://simpleicons.org/icons/github.svg",
-                    elem_classes=["header-button"],
-                    size="md",
-                    min_width=0,
-                )
-                gr.Button(
-                    value="Weights",
-                    link="https://huggingface.co/kiwhansong/DFoT",
-                    icon="https://simpleicons.org/icons/huggingface.svg",
-                    elem_classes=["header-button"],
-                    size="md",
-                    min_width=0,
-                )
-        gr.Markdown("---")
-        gr.Markdown("#### Choose a Demo ↓")
-        with gr.Column(elem_classes=["demo-button-column"]):
-            @gr.render(inputs=[demo_idx])
-            def render_demo_tabs(idx):
-                demo_tab_button1 = gr.Button(
-                    "1: Image → Long Video",
-                    size="md", elem_classes=["demo-button"], **{"elem_id": "selected-demo-button"} if idx == 1 else {}
-                ).click(
-                    fn=lambda: 1,
-                    outputs=demo_idx
-                )
-                demo_tab_button2 = gr.Button(
-                    "2: Any # of Images → Short Video",
-                    size="md", elem_classes=["demo-button"], **{"elem_id": "selected-demo-button"} if idx == 2 else {}
-                ).click(
-                    fn=lambda: 2,
-                    outputs=demo_idx
-                )
-                demo_tab_button3 = gr.Button(
-                    "3: Image → Extremely Long Video",
-                    size="md", elem_classes=["demo-button"],  **{"elem_id": "selected-demo-button"} if idx == 3 else {}
-                ).click(
-                    fn=lambda: 3,
-                    outputs=demo_idx
-                )
-        gr.Markdown("---")
-        gr.Markdown("#### Troubleshooting ↓")
-        with gr.Group():
-            with gr.Accordion("Error or Unexpected Results?", open=False):
-                gr.Markdown("Please try again after refreshing the page and ensure you do not click the same button multiple times.")
-            with gr.Accordion("Too Slow or No GPU Allocation?", open=False):
-                gr.Markdown(
-                    "Consider running the demo locally (click the dots in the top-right corner). Alternatively, you can subscribe to Hugging Face Pro for an increased GPU quota."
-                )
-
+    # Initialize demo states.
     demo1_stage = gr.State(value="Selection")
     demo1_selected_index = gr.State(value=None)
     demo2_stage = gr.State(value="Scene")
@@ -1232,6 +1156,7 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="teal")) as demo:
     def render_demo(
         _demo_idx, _demo1_stage, _demo1_selected_index, _demo2_stage, _demo2_selected_scene_index, _demo2_selected_image_indices, _demo3_stage, _demo3_selected_index
     ):
+        # With demo_idx always set to 3, demo3 is rendered.
         match _demo_idx:
             case 1:
                 render_demo1(_demo1_stage, _demo1_selected_index, demo1_stage, demo1_selected_index)
@@ -1250,15 +1175,12 @@ def demo_continuous_generation(idx: int, current_video_state: gr.State, current_
     frames_buffer = []
     
     def process_frames(video, poses):
-        video_cpu=video.cpu()
-        poses_cpu=poses.cpu()
-        current_frame=(video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy()
-        #current_poses_state.update(poses.cpu())
-        #current_view.update((video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy())
-        #video_output.update(export_to_video(video_cpu, fps=NAVIGATION_FPS))
+        video_cpu = video.cpu()
+        poses_cpu = poses.cpu()
+        current_frame = (video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy()
         gallery_images = [
             (image, f"t={i}") for i, image in enumerate(
-                (video_cpu.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
+                (video_cpu.permute(0, 2, 3, 1)*255).clamp(0, 255).to(torch.uint8).numpy()
             )
         ]
         return (
@@ -1269,13 +1191,6 @@ def demo_continuous_generation(idx: int, current_video_state: gr.State, current_
             gallery_images,
             True
         )
-        #frames = (video.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
-        #frames_buffer.extend([frame for frame in frames])
-        
-        #if len(frames_buffer) >= 30:  
-        #    write_video(output_path, np.stack(frames_buffer), fps=NAVIGATION_FPS)
-        
-        #return True 
     
     final_video, final_poses = generate_continuous_video(
         initial_video=initial_video,
@@ -1289,18 +1204,16 @@ def demo_continuous_generation(idx: int, current_video_state: gr.State, current_
         callback=process_frames
     )
     
-    final_video_cpu=final_video.cpu()
-    final_poses_cpu=final_poses.cpu()
-    #if frames_buffer:
-    #    write_video(output_path, np.stack(frames_buffer), fps=NAVIGATION_FPS)
+    final_video_cpu = final_video.cpu()
+    final_poses_cpu = final_poses.cpu()
     
     return (
         final_video_cpu,
         final_poses_cpu,
-        (final_video_cpu[-1].permute(1, 2, 0) * 255).clamp(0, 255).to(torch.uint8).numpy(),
+        (final_video_cpu[-1].permute(1, 2, 0)*255).clamp(0, 255).to(torch.uint8).numpy(),
         export_to_video(final_video_cpu, fps=NAVIGATION_FPS),
         [(image, f"t={i}") for i, image in enumerate(
-            (final_video_cpu.permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).numpy()
+            (final_video_cpu.permute(0, 2, 3, 1)*255).clamp(0, 255).to(torch.uint8).numpy()
         )]
     )
 
